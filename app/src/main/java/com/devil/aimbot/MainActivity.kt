@@ -24,7 +24,12 @@ class MainActivity : AppCompatActivity() {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(50, 50, 50, 50) }
         statusTextView = TextView(this).apply { text = "HimmiAimbot V6.0\nStatus: Ready" }
         layout.addView(statusTextView)
-
+// إضافة كود الاتصال بالشوزوكي
+ShizukuHelper.checkAndRequest(this) {
+    // هذا الكود سيعمل فقط إذا وافق المستخدم على صلاحية الشوزوكي
+    android.util.Log.d("ShizukuTest", "تم الاتصال بالشوزوكي بنجاح!")
+    // هنا يمكنك وضع أمر بدء تسجيل الشاشة أو الخدمة في الخلفية إذا أردت
+}
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
