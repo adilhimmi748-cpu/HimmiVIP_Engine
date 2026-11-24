@@ -22,6 +22,7 @@ import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.util.concurrent.Executors
+import kotlin.math.abs
 
 class AimService : Service() {
     private var projection: MediaProjection? = null
@@ -34,6 +35,8 @@ class AimService : Service() {
     private var shOutput: OutputStream? = null
     private val executor = Executors.newSingleThreadExecutor()
     private var isProcessing = false
+    private val pid = NativePid()
+    private var lastTime = System.currentTimeMillis()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = createNotification()
@@ -69,13 +72,10 @@ class AimService : Service() {
             shOutput = shProcess?.outputStream
         } catch (e: Exception) { e.printStackTrace() }
 
-        // حماية تحميل النموذج
         try {
             interpreter = Interpreter(loadModelFile("yolov8n.tflite"))
         } catch (e: Exception) {
-            e.printStackTrace()
-            stopSelf()
-            return START_NOT_STICKY
+            e.printStackTrace(); stopSelf(); return START_NOT_STICKY
         }
 
         try {
@@ -91,10 +91,7 @@ class AimService : Service() {
                     finally { image.close(); isProcessing = false }
                 }
             }, Handler(Looper.getMainLooper()))
-        } catch (e: Exception) {
-            e.printStackTrace()
-            stopSelf()
-        }
+        } catch (e: Exception) { e.printStackTrace(); stopSelf() }
 
         return START_STICKY
     }
@@ -144,8 +141,29 @@ class AimService : Service() {
             
             val centerX = screenWidth / 2
             val centerY = screenHeight / 2
-            shOutput?.write("input swipe $centerX $centerY $screenX $screenY 10\n".toByteArray())
-            shOutput?.flush()
+            
+            // حساب حركة المغناطيس باستخدام C++
+            val currentTime = System.currentTimeMillis()
+            val dt = (currentTime - lastTime) / 1000f
+            lastTime = currentTime
+            
+            if (dt > 0.01f && dt < 0.5f) {
+                val moveX = pid.calculate(screenX.toFloat(), centerX.toFloat(), dt).toInt()
+                val moveY = pid.calculate(screenY.toFloat(), centerY.toFloat(), dt).toInt()
+
+                val targetX = centerX + moveX
+                val targetY = centerY + moveY
+
+                // تحريك الكاميرا بسلاسة
+                shOutput?.write("input swipe $centerX $centerY $targetX $targetY 15\n".toByteArray())
+                shOutput?.flush()
+                
+                // إطلاق النار إذا كان الرأس قريباً من النقطة (Lock-on)
+                if (abs(targetX - centerX) < 100 && abs(targetY - centerY) < 100) {
+                    shOutput?.write("input tap $centerX $centerY\n".toByteArray())
+                    shOutput?.flush()
+                }
+            }
         }
     }
 
@@ -159,12 +177,12 @@ class AimService : Service() {
     private fun createNotification(): Notification {
         val channelId = "aim_channel"
         if (Build.VERSION.SDK_INT >= 26) {
-            val channel = NotificationChannel(channelId, "Aimbot", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel(channelId, "Himmi Aimbot", NotificationManager.IMPORTANCE_LOW)
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
         return NotificationCompat.Builder(this, channelId)
-            .setContentTitle("HimmiAimbot Active")
-            .setContentText("Scanning for heads...")
+            .setContentTitle("HimmiAimbot VIP Panel")
+            .setContentText("Magnetic Lock Active")
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .build()
     }

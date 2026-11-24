@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.22.1)
+project("himmi_pid")
+add_library(himmi_pid SHARED pid.cpp)
+find_library(log-lib log)
+target_link_libraries(himmi_pid ${log-lib})
