@@ -1,0 +1,180 @@
+package com.devil.aimbot
+
+import android.app.*
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.*
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.os.*
+import android.view.WindowManager
+import androidx.core.app.NotificationCompat
+import org.tensorflow.lite.Interpreter
+import rikka.shizuku.ShizukuRemoteProcess
+import rikka.shizuku.Shizuku
+import java.io.FileInputStream
+import java.io.OutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.MappedByteBuffer
+import java.nio.channels.FileChannel
+import java.util.concurrent.Executors
+
+class AimService : Service() {
+    private var projection: MediaProjection? = null
+    private var virtualDisplay: VirtualDisplay? = null
+    private var imageReader: ImageReader? = null
+    private var interpreter: Interpreter? = null
+    private var screenWidth = 0
+    private var screenHeight = 0
+    private var shProcess: ShizukuRemoteProcess? = null
+    private var shOutput: OutputStream? = null
+    private val executor = Executors.newSingleThreadExecutor()
+    private var isProcessing = false
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val notification = createNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } else {
+            startForeground(1, notification)
+        }
+        
+        val code = intent?.getIntExtra("code", 0) ?: 0
+        val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra("data", Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra("data")
+        } ?: return START_NOT_STICKY
+        
+        val pm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        projection = pm.getMediaProjection(code, data)
+        if (projection == null) { stopSelf(); return START_NOT_STICKY }
+        
+        projection?.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() { stopSelf() }
+        }, Handler(Looper.getMainLooper()))
+        
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val metrics = wm.currentWindowMetrics.bounds
+        screenWidth = metrics.width()
+        screenHeight = metrics.height()
+
+        try {
+            shProcess = Shizuku.newProcess(arrayOf("sh"), null, null)
+            shOutput = shProcess?.outputStream
+        } catch (e: Exception) { e.printStackTrace() }
+
+        // حماية تحميل النموذج
+        try {
+            interpreter = Interpreter(loadModelFile("yolov8n.tflite"))
+        } catch (e: Exception) {
+            e.printStackTrace()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        try {
+            imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+            virtualDisplay = projection?.createVirtualDisplay("Aim", screenWidth, screenHeight, resources.displayMetrics.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, null)
+
+            imageReader?.setOnImageAvailableListener({ reader ->
+                if (isProcessing) { reader.acquireLatestImage()?.close(); return@setOnImageAvailableListener }
+                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                isProcessing = true
+                executor.execute {
+                    try { processImage(image) } catch (e: Exception) { e.printStackTrace() } 
+                    finally { image.close(); isProcessing = false }
+                }
+            }, Handler(Looper.getMainLooper()))
+        } catch (e: Exception) {
+            e.printStackTrace()
+            stopSelf()
+        }
+
+        return START_STICKY
+    }
+
+    private fun processImage(image: android.media.Image) {
+        val planes = image.planes
+        val buffer = planes[0].buffer
+        val bitmap = Bitmap.createBitmap(screenWidth, screenHeight, Bitmap.Config.ARGB_8888)
+        bitmap.copyPixelsFromBuffer(buffer)
+
+        val resized = Bitmap.createScaledBitmap(bitmap, 320, 320, true)
+        val input = ByteBuffer.allocateDirect(1 * 320 * 320 * 3 * 4).order(ByteOrder.nativeOrder())
+        val pixels = IntArray(320 * 320)
+        resized.getPixels(pixels, 0, 320, 0, 0, 320, 320)
+        for (p in pixels) {
+            input.putFloat(((p shr 16 and 0xFF) / 255.0f))
+            input.putFloat(((p shr 8 and 0xFF) / 255.0f))
+            input.putFloat(((p and 0xFF) / 255.0f))
+        }
+
+        val output = Array(1) { Array(84) { FloatArray(2100) } }
+        interpreter?.run(input, output)
+
+        var bestConf = 0f
+        var bestX = 0f
+        var bestY = 0f
+
+        for (i in 0 until 2100) {
+            val conf = output[0][4][i]
+            if (conf > 0.5f && conf > bestConf) {
+                val cx = output[0][0][i]
+                val cy = output[0][1][i]
+                val h = output[0][3][i]
+                
+                val headX = cx
+                val headY = cy - (h / 2f) + (h * 0.15f)
+                
+                bestConf = conf
+                bestX = headX
+                bestY = headY
+            }
+        }
+
+        if (bestConf > 0.5f) {
+            val screenX = (bestX / 320f * screenWidth).toInt()
+            val screenY = (bestY / 320f * screenHeight).toInt()
+            
+            val centerX = screenWidth / 2
+            val centerY = screenHeight / 2
+            shOutput?.write("input swipe $centerX $centerY $screenX $screenY 10\n".toByteArray())
+            shOutput?.flush()
+        }
+    }
+
+    private fun loadModelFile(path: String): MappedByteBuffer {
+        val fileDescriptor = assets.openFd(path)
+        val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
+        val fileChannel = inputStream.channel
+        return fileChannel.map(FileChannel.MapMode.READ_ONLY, fileDescriptor.startOffset, fileDescriptor.declaredLength)
+    }
+
+    private fun createNotification(): Notification {
+        val channelId = "aim_channel"
+        if (Build.VERSION.SDK_INT >= 26) {
+            val channel = NotificationChannel(channelId, "Aimbot", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+        return NotificationCompat.Builder(this, channelId)
+            .setContentTitle("HimmiAimbot Active")
+            .setContentText("Scanning for heads...")
+            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .build()
+    }
+
+    override fun onDestroy() {
+        virtualDisplay?.release()
+        imageReader?.close()
+        projection?.stop()
+        shProcess?.destroy()
+        super.onDestroy()
+    }
+    override fun onBind(intent: Intent?): IBinder? = null
+}
