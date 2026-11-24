@@ -22,7 +22,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(50, 50, 50, 50) }
-        statusTextView = TextView(this).apply { text = "HimmiAimbot v3.0 (Crash-Proof)\nStatus: Ready" }
+        statusTextView = TextView(this).apply { text = "HimmiAimbot V6.0\nStatus: Ready" }
         layout.addView(statusTextView)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -35,8 +35,10 @@ class MainActivity : AppCompatActivity() {
         btnShizuku.setOnClickListener {
             try {
                 if (!Shizuku.pingBinder()) {
-                    statusTextView.text = "Status: Shizuku is NOT running!"
-                    Toast.makeText(this, "Please start Shizuku first!", Toast.LENGTH_LONG).show()
+                    statusTextView.text = "Status: Shizuku is NOT running!\nPlease open Shizuku app and start it."
+                    // محاولة فتح تطبيق Shizuku تلقائياً
+                    val intent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                    if (intent != null) startActivity(intent)
                     return@setOnClickListener
                 }
                 if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
@@ -53,7 +55,7 @@ class MainActivity : AppCompatActivity() {
         val btnStart = Button(this).apply { text = "2. START AIMBOT" }
         btnStart.setOnClickListener {
             if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Please grant Shizuku first!", Toast.LENGTH_SHORT).show()
+                statusTextView.text = "Status: Please grant Shizuku first!\n(If it says NOT running, open Shizuku app)"
                 return@setOnClickListener
             }
             try {
@@ -76,7 +78,7 @@ class MainActivity : AppCompatActivity() {
                     putExtra("data", data)
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
-                statusTextView.text = "Status: Aimbot Running!"
+                statusTextView.text = "Status: Aimbot Running in Background!"
                 Toast.makeText(this, "Aimbot Started!", Toast.LENGTH_LONG).show()
                 finish()
             } catch (e: Exception) {
